@@ -1,4 +1,5 @@
 import tensorflow as tf
+tf.compat.v1.disable_eager_execution()
 
 
 class Logger(object):
@@ -9,5 +10,5 @@ class Logger(object):
 
     def scalar_summary(self, tag, value, step):
         """Log a scalar variable."""
-        summary = tf.compat.v1.Summary(value=[tf.Summary.Value(tag=tag, simple_value=value)])
+        summary = tf.compat.v1.Summary(value=[tf.compat.v1.Summary.Value(tag=tag, simple_value=value)])
         self.writer.add_summary(summary, step)

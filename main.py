@@ -87,7 +87,7 @@ if __name__ == '__main__':
 
     # Quantum
     # quantum circuit to generate inputs of MolGAN
-    config.quantum = False
+    config.quantum = True
     # number of qubit of quantum circuit
     config.qubits = 8
     # number of layer of quantum circuit

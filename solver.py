@@ -22,15 +22,27 @@ from utils.logger import Logger
 from frechetdist import frdist
 
 def upper(m, a):
-    res = torch.zeros((m.shape[0], 36, 5)).to(m.device).long()
+    # Build upper-triangle representation of adjacency one-hot tensor
+    channels = m.shape[-1]
+    res = torch.zeros((m.shape[0], 36, channels)).to(m.device).long()
+    idx = torch.triu_indices(9, 9, offset=1)
     for i in range(m.shape[0]):
-        for j in range(5):
+        for j in range(channels):
             tmp_m = m[i, :, :, j]
-            idx = torch.triu_indices(9, 9,offset = 1)
-
             res[i, :, j] = tmp_m[list(idx)]
-    res = torch.cat((res, a), dim=1)
-    return res        
+
+    # Ensure last-dimension (channels) matches before concatenation by padding the smaller tensor
+    a_channels = a.shape[-1]
+    if res.shape[-1] != a_channels:
+        target_ch = max(res.shape[-1], a_channels)
+        if res.shape[-1] < target_ch:
+            pad = torch.zeros((res.shape[0], res.shape[1], target_ch - res.shape[-1]), device=res.device, dtype=res.dtype)
+            res = torch.cat((res, pad), dim=2)
+        if a_channels < target_ch:
+            pad = torch.zeros((a.shape[0], a.shape[1], target_ch - a_channels), device=a.device, dtype=a.dtype)
+            a = torch.cat((a, pad), dim=2)
+
+    return torch.cat((res, a), dim=1)        
 
 
 class Solver(object):
@@ -384,13 +396,13 @@ class Solver(object):
             elif train_val_test == 'val' and self.quantum:
                 if self.test_sample_size is None:
                     mols, _, _, a, x, _, _, _, _ = self.data.next_validation_batch()
-                    sample_list = [self.gen_circuit(self.gen_weights) for i in range(a.shape[0])]
+                    sample_list = [torch.stack(self.gen_circuit(self.gen_weights)) for i in range(a.shape[0])]
                 else:
                     mols, _, _, a, x, _, _, _, _ = self.data.next_validation_batch(self.test_sample_size)
-                    sample_list = [self.gen_circuit(self.gen_weights) for i in range(self.test_sample_size)]
+                    sample_list = [torch.stack(self.gen_circuit(self.gen_weights)) for i in range(self.test_sample_size)]
             elif train_val_test == 'train' and self.quantum:
                 mols, _, _, a, x, _, _, _, _ = self.data.next_train_batch(self.batch_size)
-                sample_list = [self.gen_circuit(self.gen_weights) for i in range(self.batch_size)]
+                sample_list = [torch.stack(self.gen_circuit(self.gen_weights)) for i in range(self.batch_size)]
 
             # Error
             else:

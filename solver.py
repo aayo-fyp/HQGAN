@@ -120,6 +120,12 @@ class Solver(object):
         self.log_dir_path = config.log_dir_path
         self.model_dir_path = config.model_dir_path
         self.img_dir_path = config.img_dir_path
+        
+        # CSV logging file path
+        if config.mode == 'train':
+            self.csv_log_path = os.path.join(config.log_dir_path, 'training_metrics.csv')
+        else:
+            self.csv_log_path = os.path.join(config.log_dir_path, 'test_metrics.csv')
 
         # Step size to save the model
         self.model_save_step = config.model_save_step
@@ -336,6 +342,46 @@ class Solver(object):
         mols = [self.data.matrices2mol(n_.data.cpu().numpy(), e_.data.cpu().numpy(), strict=True) for e_, n_ in zip(edges_hard, nodes_hard)]
         reward = torch.from_numpy(self.reward(mols)).to(self.device)
         return reward
+
+    def log_metrics_to_csv(self, epoch_i, step, losses, scores, et=0):
+        """Log all training metrics to CSV file"""
+        # Check if CSV file exists, if not create with headers
+        file_exists = os.path.exists(self.csv_log_path)
+        
+        with open(self.csv_log_path, 'a', newline='') as file:
+            writer = csv.writer(file)
+            
+            # Write header if file is new
+            if not file_exists:
+                headers = ['epoch', 'step', 'elapsed_time']
+                # Add loss headers
+                loss_headers = ['D/loss_real', 'D/loss_fake', 'D/loss_gp', 'D/loss', 'G/loss', 'RL/loss', 'V/loss', 'FD/bond', 'FD/bond_atom']
+                headers.extend(loss_headers)
+                # Add score headers
+                score_headers = ['valid', 'unique', 'novel', 'NP', 'QED', 'Solute', 'SA', 'diverse', 'drugcand']
+                headers.extend(score_headers)
+                writer.writerow(headers)
+            
+            # Prepare row data
+            row = [epoch_i + 1, step, et]
+            
+            # Add loss values (average over the batch)
+            loss_keys = ['D/loss_real', 'D/loss_fake', 'D/loss_gp', 'D/loss', 'G/loss', 'RL/loss', 'V/loss', 'FD/bond', 'FD/bond_atom']
+            for key in loss_keys:
+                if key in losses and len(losses[key]) > 0:
+                    row.append(np.mean(losses[key]))
+                else:
+                    row.append('')
+            
+            # Add score values
+            score_keys = ['valid', 'unique', 'novel', 'NP', 'QED', 'Solute', 'SA', 'diverse', 'drugcand']
+            for key in score_keys:
+                if key in scores and len(scores[key]) > 0:
+                    row.append(np.mean(scores[key]))
+                else:
+                    row.append('')
+            
+            writer.writerow(row)
 
     def save_checkpoints(self, epoch_i):
         """store the models and quantum circuit"""
@@ -609,9 +655,14 @@ class Solver(object):
                 mol_f_name = os.path.join(self.img_dir_path, 'mol-{}.png'.format(epoch_i))
                 save_mol_img(mols, mol_f_name, is_test=self.mode == 'test')
 
+                # Calculate elapsed time once
+                et_seconds = time.time() - self.start_time
+                
+                # Log metrics to CSV
+                self.log_metrics_to_csv(epoch_i, a_step, losses, scores, et=et_seconds)
+
                 # Print out training information
-                et = time.time() - self.start_time
-                et = str(datetime.timedelta(seconds=et))[:-7]
+                et = str(datetime.timedelta(seconds=et_seconds))[:-7]
                 log = "Elapsed [{}], Iteration [{}/{}]:".format(et, epoch_i + 1, self.num_epochs)
 
                 is_first = True

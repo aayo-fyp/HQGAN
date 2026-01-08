@@ -73,7 +73,11 @@ class MolecularMetrics(object):
 
     @staticmethod
     def novel_total_score(mols, data):
-        return MolecularMetrics.novel_scores(MolecularMetrics.valid_filter(mols), data).mean()
+        valid_mols = MolecularMetrics.valid_filter(mols)
+        if len(valid_mols) == 0:
+            return 0.0  # No valid molecules = 0% novelty (not nan)
+        scores = MolecularMetrics.novel_scores(valid_mols, data)
+        return scores.mean() if len(scores) > 0 else 0.0
 
     @staticmethod
     def unique_scores(mols):
@@ -258,17 +262,61 @@ class MolecularMetrics(object):
 
 
 def all_scores(mols, data, norm=False, reconstruction=False):
-    m0 = {k: list(filter(lambda e: e is not None, v)) for k, v in {
-        'NP': MolecularMetrics.natural_product_scores(mols, norm=norm),
-        'QED': MolecularMetrics.quantitative_estimation_druglikeness_scores(mols),
-        'Solute': MolecularMetrics.water_octanol_partition_coefficient_scores(mols, norm=norm),
-        'SA': MolecularMetrics.synthetic_accessibility_score_scores(mols, norm=norm),
-        'diverse': MolecularMetrics.diversity_scores(mols, data),
-        'drugcand': MolecularMetrics.drugcandidate_scores(mols, data)}.items()}
+    # Compute each metric separately with error handling to prevent cascading failures
+    m0 = {}
+    
+    # NP score
+    try:
+        m0['NP'] = list(filter(lambda e: e is not None, MolecularMetrics.natural_product_scores(mols, norm=norm)))
+    except Exception as e:
+        m0['NP'] = []
+    
+    # QED score
+    try:
+        m0['QED'] = list(filter(lambda e: e is not None, MolecularMetrics.quantitative_estimation_druglikeness_scores(mols)))
+    except Exception as e:
+        m0['QED'] = []
+    
+    # Solute (LogP) score
+    try:
+        m0['Solute'] = list(filter(lambda e: e is not None, MolecularMetrics.water_octanol_partition_coefficient_scores(mols, norm=norm)))
+    except Exception as e:
+        m0['Solute'] = []
+    
+    # SA score
+    try:
+        m0['SA'] = list(filter(lambda e: e is not None, MolecularMetrics.synthetic_accessibility_score_scores(mols, norm=norm)))
+    except Exception as e:
+        m0['SA'] = []
+    
+    # Diversity score
+    try:
+        m0['diverse'] = list(filter(lambda e: e is not None, MolecularMetrics.diversity_scores(mols, data)))
+    except Exception as e:
+        m0['diverse'] = []
+    
+    # Drug candidate score
+    try:
+        m0['drugcand'] = list(filter(lambda e: e is not None, MolecularMetrics.drugcandidate_scores(mols, data)))
+    except Exception as e:
+        m0['drugcand'] = []
 
-    m1 = {'valid': MolecularMetrics.valid_total_score(mols) * 100,
-          'unique': MolecularMetrics.unique_total_score(mols) * 100,
-          'novel': MolecularMetrics.novel_total_score(mols, data) * 100}
+    # m1 metrics
+    m1 = {}
+    try:
+        m1['valid'] = MolecularMetrics.valid_total_score(mols) * 100
+    except Exception:
+        m1['valid'] = 0.0
+    
+    try:
+        m1['unique'] = MolecularMetrics.unique_total_score(mols) * 100
+    except Exception:
+        m1['unique'] = 0.0
+    
+    try:
+        m1['novel'] = MolecularMetrics.novel_total_score(mols, data) * 100
+    except Exception:
+        m1['novel'] = 0.0
 
     return m0, m1
 

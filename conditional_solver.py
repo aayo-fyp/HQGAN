@@ -660,10 +660,18 @@ class ConditionalSolver(object):
                 for k, v in m1.items():
                     scores[k].append(v)
                 for k, v in m0.items():
-                    # Safer computation: handle empty arrays gracefully (from original QuantumMolGAN)
+                    # Compute mean, preferring non-zero values but falling back to all values
                     v_array = np.array(v)
-                    nonzero_v = v_array[np.nonzero(v_array)] if len(v_array) > 0 else np.array([])
-                    scores[k].append(nonzero_v.mean() if len(nonzero_v) > 0 else np.nan)
+                    if len(v_array) == 0:
+                        scores[k].append(np.nan)
+                    else:
+                        nonzero_v = v_array[np.nonzero(v_array)]
+                        if len(nonzero_v) > 0:
+                            # Use mean of non-zero values (valid molecules)
+                            scores[k].append(nonzero_v.mean())
+                        else:
+                            # All values are zero - report mean (which is 0)
+                            scores[k].append(v_array.mean())
 
                 # Compute class accuracy and LogP statistics
                 class_acc, per_class_acc, logp_stats = self.compute_class_accuracy(gen_mols, target_class_labels)

@@ -55,12 +55,21 @@ class MolecularMetrics(object):
 
     @staticmethod
     def novel_scores(mols, data):
+        # Use smiles_set for O(1) lookup if available, otherwise fall back to smiles
+        smiles_lookup = getattr(data, 'smiles_set', None)
+        if smiles_lookup is None:
+            # Create set from smiles for faster lookup
+            smiles_lookup = set(data.smiles) if hasattr(data, 'smiles') else set()
         return np.array(
-            list(map(lambda x: MolecularMetrics.valid_lambda(x) and Chem.MolToSmiles(x) not in data.smiles, mols)))
+            list(map(lambda x: MolecularMetrics.valid_lambda(x) and Chem.MolToSmiles(x) not in smiles_lookup, mols)))
 
     @staticmethod
     def novel_filter(mols, data):
-        return list(filter(lambda x: MolecularMetrics.valid_lambda(x) and Chem.MolToSmiles(x) not in data.smiles, mols))
+        # Use smiles_set for O(1) lookup if available
+        smiles_lookup = getattr(data, 'smiles_set', None)
+        if smiles_lookup is None:
+            smiles_lookup = set(data.smiles) if hasattr(data, 'smiles') else set()
+        return list(filter(lambda x: MolecularMetrics.valid_lambda(x) and Chem.MolToSmiles(x) not in smiles_lookup, mols))
 
     @staticmethod
     def novel_total_score(mols, data):

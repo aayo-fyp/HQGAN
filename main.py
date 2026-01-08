@@ -11,6 +11,7 @@ lg = RDLogger.logger()
 lg.setLevel(RDLogger.CRITICAL)
 
 from solver import Solver
+from conditional_solver import ConditionalSolver
 from torch.backends import cudnn
 
 import pennylane as qml
@@ -62,12 +63,21 @@ def main(config):
         raise NotImplementedError
 
     # Solver for training and test MolGAN
-    if config.mode == 'train':
-        solver = Solver(config, logging)
-    elif config.mode == 'test':
-        solver = Solver(config, logging)
+    # Use ConditionalSolver for conditional generation, otherwise use standard Solver
+    if config.conditional:
+        print('=' * 60)
+        print('CONDITIONAL MODE: LogP-based generation')
+        print('Class 0: Hydrophilic (LogP < 0)')
+        print('Class 1: Balanced (0 <= LogP <= 2)')
+        print('=' * 60)
+        solver = ConditionalSolver(config, logging)
     else:
-        raise NotImplementedError
+        if config.mode == 'train':
+            solver = Solver(config, logging)
+        elif config.mode == 'test':
+            solver = Solver(config, logging)
+        else:
+            raise NotImplementedError
 
     solver.train_and_validate()
 
@@ -83,6 +93,19 @@ if __name__ == '__main__':
     # molecule dataset dir
     config.mol_data_dir = r'data/gdb9_9nodes.sparsedataset'
     #config.mol_data_dir = r'data/qm9_5k.sparsedataset'
+
+
+    # ============================================================
+    # CONDITIONAL GENERATION (LogP-based)
+    # ============================================================
+    # Set to True for conditional generation based on LogP classes:
+    # Class 0: Hydrophilic (LogP < 0)
+    # Class 1: Balanced (0 <= LogP <= 2)
+    config.conditional = True
+    # Dimension of class embedding in generator
+    config.class_embed_dim = 8
+    # Weight for classification loss (AC-GAN style)
+    config.lambda_cls = 1.0
 
 
     # Quantum
@@ -144,9 +167,16 @@ if __name__ == '__main__':
         raise ValueError("Please enter an valid model complexity from 'mr', 'hr' or 'nr'!")
 
 
-    # Quantum directory
-    if config.quantum and config.mode == 'train':
-        config.saving_dir = 'results/quantum-GAN'
+    # Results directory based on mode
+    if config.mode == 'train':
+        if config.conditional and config.quantum:
+            config.saving_dir = 'results/conditional-quantum-GAN'
+        elif config.conditional:
+            config.saving_dir = 'results/conditional-GAN'
+        elif config.quantum:
+            config.saving_dir = 'results/quantum-GAN'
+        else:
+            config.saving_dir = 'results/GAN'
 
     # Quantum Circuit
     dev = qml.device('default.qubit', wires=config.qubits)

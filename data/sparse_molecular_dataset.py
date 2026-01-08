@@ -124,15 +124,13 @@ class SparseMolecularDataset():
         self.validation_idx = np.array([old_to_new[idx] for idx in self.validation_idx if idx in old_to_new])
         self.test_idx = np.array([old_to_new[idx] for idx in self.test_idx if idx in old_to_new])
         
-        # CRITICAL: Convert numpy arrays back to lists to fix 'in' operator for novelty/diversity checks
-        # numpy fancy indexing returns numpy arrays, but the metrics functions expect lists
-        if isinstance(self.data, np.ndarray):
-            self.data = list(self.data)
-        if isinstance(self.smiles, np.ndarray):
-            self.smiles = list(self.smiles)
-        
         # Create a set for O(1) novelty lookups (used by novel_scores)
-        self.smiles_set = set(self.smiles)
+        # NOTE: Keep self.data and self.smiles as numpy arrays for batch indexing,
+        # but create smiles_set for fast 'in' operator in novelty checks
+        if isinstance(self.smiles, np.ndarray):
+            self.smiles_set = set(self.smiles.tolist())
+        else:
+            self.smiles_set = set(self.smiles)
         
         self.log('After filtering: {} molecules remaining'.format(len(self.data)))
 

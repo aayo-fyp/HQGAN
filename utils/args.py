@@ -14,7 +14,7 @@ def get_GAN_config():
     parser.add_argument('--update_qc', type=bool, default=True, help='choose to update the quantum circuit')
     parser.add_argument('--qc_lr', type=float, default=None, help='learning rate of quantum circuit')
     parser.add_argument('--qc_pretrained', type=bool, default=False, help='choose to use pretrained quantum circuit')
-    
+
     # Conditional generation configuration
     parser.add_argument('--conditional', type=bool, default=False, help='enable conditional generation based on LogP classes')
     parser.add_argument('--class_embed_dim', type=int, default=8, help='dimension of class embedding in generator')

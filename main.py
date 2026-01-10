@@ -25,11 +25,20 @@ def main(config):
 
     # Timestamp
     if config.mode == 'train':
-        a_train_time = get_date_postfix()
-        config.saving_dir = os.path.join(config.saving_dir, a_train_time)
-        config.log_dir_path = os.path.join(config.saving_dir, config.mode, 'log_dir')
-        config.model_dir_path = os.path.join(config.saving_dir, config.mode, 'model_dir')
-        config.img_dir_path = os.path.join(config.saving_dir, config.mode, 'img_dir')
+        # If resuming, don't add new timestamp - use provided saving_dir as-is
+        if config.resume_epoch is not None:
+            # saving_dir already contains full path with timestamp
+            config.log_dir_path = os.path.join(config.saving_dir, config.mode, 'log_dir')
+            config.model_dir_path = os.path.join(config.saving_dir, config.mode, 'model_dir')
+            config.img_dir_path = os.path.join(config.saving_dir, config.mode, 'img_dir')
+            # Extract timestamp from path for logger filename
+            a_train_time = os.path.basename(config.saving_dir)
+        else:
+            a_train_time = get_date_postfix()
+            config.saving_dir = os.path.join(config.saving_dir, a_train_time)
+            config.log_dir_path = os.path.join(config.saving_dir, config.mode, 'log_dir')
+            config.model_dir_path = os.path.join(config.saving_dir, config.mode, 'model_dir')
+            config.img_dir_path = os.path.join(config.saving_dir, config.mode, 'img_dir')
     else:
         a_test_time = get_date_postfix()
         config.saving_dir = os.path.join(config.saving_dir)
@@ -167,8 +176,8 @@ if __name__ == '__main__':
         raise ValueError("Please enter an valid model complexity from 'mr', 'hr' or 'nr'!")
 
 
-    # Results directory based on mode
-    if config.mode == 'train':
+    # Results directory based on mode (only set default if not resuming with a specific dir)
+    if config.mode == 'train' and config.resume_epoch is None:
         if config.conditional and config.quantum:
             config.saving_dir = 'results/conditional-quantum-GAN'
         elif config.conditional:

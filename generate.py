@@ -24,8 +24,9 @@ from rdkit.Chem import Crippen, AllChem, Draw
 
 from models.models import ConditionalGenerator
 from data.sparse_molecular_dataset import SparseMolecularDataset, LOGP_CLASS_HYDROPHILIC, LOGP_CLASS_BALANCED
-from utils.utils import save_mol_img
+from utils.utils import save_mol_img, MolecularMetrics, all_scores
 from utils.utils_io import get_date_postfix
+import torch.nn.functional as F
 
 
 def parse_args():
@@ -36,6 +37,8 @@ def parse_args():
                         help='Target class: hydrophilic (LogP<0) or balanced (0<=LogP<=2)')
     parser.add_argument('--num_samples', type=int, default=100,
                         help='Number of molecules to generate')
+    parser.add_argument('--batch_size', type=int, default=16,
+                        help='Batch size for generation (default: 16, same as training)')
     parser.add_argument('--model_dir', type=str, required=True,
                         help='Directory containing trained model checkpoints')
     parser.add_argument('--model_epoch', type=int, default=None,
@@ -115,6 +118,18 @@ def save_generation_config(dirs, args, class_name, class_desc, model_epoch, stat
             'valid_molecules': stats['valid'],
             'validity_rate': stats['validity_rate'],
             'class_accuracy': stats['class_accuracy'],
+            'molecular_quality': {
+                'validity': stats.get('valid', 0.0),
+                'uniqueness': stats.get('unique', 0.0),
+                'novelty': stats.get('novel', 0.0)
+            },
+            'drug_likeness': {
+                'qed_mean': stats.get('qed_mean', 0.0),
+                'sa_score_mean': stats.get('sa_mean', 0.0),
+                'np_score_mean': stats.get('np_mean', 0.0),
+                'diversity_mean': stats.get('diversity_mean', 0.0),
+                'drug_candidate_mean': stats.get('drugcand_mean', 0.0)
+            },
             'logp_raw': {
                 'mean': stats['logp_mean'],
                 'std': stats['logp_std'],
@@ -217,13 +232,37 @@ def create_quantum_circuit(qubits, layer):
     return gen_circuit
 
 
-def generate_molecules(G, data, target_class, num_samples, args, device='cpu'):
-    """Generate molecules of specified class"""
+def postprocess_stochastic(edges_logits, nodes_logits, method='soft_gumbel', temperature=1.0):
+    """Postprocess logits using stochastic sampling (soft_gumbel) for diversity"""
+    if method == 'soft_gumbel':
+        # Stochastic Gumbel-Softmax (soft) - more diverse
+        edges_soft = F.gumbel_softmax(edges_logits.contiguous().view(-1, edges_logits.size(-1))/temperature, hard=False).view(edges_logits.size())
+        nodes_soft = F.gumbel_softmax(nodes_logits.contiguous().view(-1, nodes_logits.size(-1))/temperature, hard=False).view(nodes_logits.size())
+        edges_hard = torch.argmax(edges_soft, dim=-1)
+        nodes_hard = torch.argmax(nodes_soft, dim=-1)
+    elif method == 'hard_gumbel':
+        # Hard Gumbel-Softmax - still stochastic but discrete
+        edges_hard = F.gumbel_softmax(edges_logits.contiguous().view(-1, edges_logits.size(-1))/temperature, hard=True).view(edges_logits.size())
+        nodes_hard = F.gumbel_softmax(nodes_logits.contiguous().view(-1, nodes_logits.size(-1))/temperature, hard=True).view(nodes_logits.size())
+        edges_hard = torch.argmax(edges_hard, dim=-1)
+        nodes_hard = torch.argmax(nodes_hard, dim=-1)
+    else:
+        # Fallback to softmax + argmax
+        edges_hard = torch.argmax(torch.softmax(edges_logits, dim=-1), dim=-1)
+        nodes_hard = torch.argmax(torch.softmax(nodes_logits, dim=-1), dim=-1)
     
-    # Create target labels
-    target_labels = torch.full((num_samples,), target_class, dtype=torch.long).to(device)
+    return edges_hard, nodes_hard
+
+
+def generate_molecules(G, data, target_class, num_samples, args, device='cpu', batch_size=16):
+    """Generate molecules of specified class in batches for better diversity"""
     
-    # Generate noise
+    all_mols = []
+    num_batches = (num_samples + batch_size - 1) // batch_size  # Ceiling division
+    
+    print(f'Generating {num_samples} molecules in {num_batches} batches of {batch_size}...')
+    
+    # Setup quantum circuit if needed
     if args.quantum:
         print('Using quantum noise generation...')
         gen_circuit = create_quantum_circuit(args.qubits, args.layer)
@@ -236,32 +275,41 @@ def generate_molecules(G, data, target_class, num_samples, args, device='cpu'):
             gen_weights = torch.tensor(list(weights), requires_grad=False)
         else:
             gen_weights = torch.tensor(list(np.random.rand(args.layer*(args.qubits*2-1))*2*np.pi-np.pi), requires_grad=False)
+    
+    # Generate in batches
+    for batch_idx in range(num_batches):
+        current_batch_size = min(batch_size, num_samples - len(all_mols))
         
-        z = torch.stack([torch.stack(gen_circuit(gen_weights)) for _ in range(num_samples)]).to(device).float()
-    else:
-        z = torch.randn(num_samples, args.z_dim).to(device)
-    
-    # Generate
-    with torch.no_grad():
-        edges_logits, nodes_logits = G(z, target_labels)
+        # Create target labels for this batch
+        target_labels = torch.full((current_batch_size,), target_class, dtype=torch.long).to(device)
         
-        # Postprocess with hard Gumbel
-        edges_hard = torch.softmax(edges_logits, dim=-1)
-        nodes_hard = torch.softmax(nodes_logits, dim=-1)
-        edges_hard = torch.argmax(edges_hard, dim=-1)
-        nodes_hard = torch.argmax(nodes_hard, dim=-1)
+        # Generate noise for this batch
+        if args.quantum:
+            z = torch.stack([torch.stack(gen_circuit(gen_weights)) for _ in range(current_batch_size)]).to(device).float()
+        else:
+            z = torch.randn(current_batch_size, args.z_dim).to(device)
+        
+        # Generate molecules
+        with torch.no_grad():
+            edges_logits, nodes_logits = G(z, target_labels)
+            
+            # Use stochastic sampling (soft_gumbel) for diversity
+            edges_hard, nodes_hard = postprocess_stochastic(edges_logits, nodes_logits, method='soft_gumbel', temperature=1.0)
+        
+        # Convert to molecules
+        for i in range(current_batch_size):
+            mol = data.matrices2mol(
+                nodes_hard[i].cpu().numpy(),
+                edges_hard[i].cpu().numpy(),
+                strict=True
+            )
+            all_mols.append(mol)
+        
+        if (batch_idx + 1) % 10 == 0:
+            print(f'  Generated batch {batch_idx + 1}/{num_batches} ({len(all_mols)}/{num_samples} molecules)')
     
-    # Convert to molecules
-    mols = []
-    for i in range(num_samples):
-        mol = data.matrices2mol(
-            nodes_hard[i].cpu().numpy(),
-            edges_hard[i].cpu().numpy(),
-            strict=True
-        )
-        mols.append(mol)
-    
-    return mols
+    print(f'Generated {len(all_mols)} molecules total')
+    return all_mols
 
 
 def compute_logp_stats(mols, target_class):
@@ -314,6 +362,60 @@ def compute_logp_stats(mols, target_class):
         'correct_class': correct_class,
         'valid_mols': valid_mols
     }
+
+
+def compute_all_metrics(mols, data):
+    """Compute all molecular metrics: validity, uniqueness, novelty, QED, SA, NP, diversity, drug candidate"""
+    try:
+        # Compute all scores using the utility function
+        m0, m1 = all_scores(mols, data, norm=False, reconstruction=False)
+        
+        # Extract metrics
+        metrics = {
+            'valid': m1.get('valid', 0.0),
+            'unique': m1.get('unique', 0.0),
+            'novel': m1.get('novel', 0.0),
+        }
+        
+        # Compute mean values for property scores (filter out None values)
+        if m0.get('QED'):
+            metrics['qed_mean'] = np.mean(m0['QED']) if m0['QED'] else 0.0
+        else:
+            metrics['qed_mean'] = 0.0
+            
+        if m0.get('SA'):
+            metrics['sa_mean'] = np.mean(m0['SA']) if m0['SA'] else 0.0
+        else:
+            metrics['sa_mean'] = 0.0
+            
+        if m0.get('NP'):
+            metrics['np_mean'] = np.mean(m0['NP']) if m0['NP'] else 0.0
+        else:
+            metrics['np_mean'] = 0.0
+            
+        if m0.get('Solute'):
+            metrics['logp_solute_mean'] = np.mean(m0['Solute']) if m0['Solute'] else 0.0
+        else:
+            metrics['logp_solute_mean'] = 0.0
+            
+        if m0.get('diverse'):
+            metrics['diversity_mean'] = np.mean(m0['diverse']) if m0['diverse'] else 0.0
+        else:
+            metrics['diversity_mean'] = 0.0
+            
+        if m0.get('drugcand'):
+            metrics['drugcand_mean'] = np.mean(m0['drugcand']) if m0['drugcand'] else 0.0
+        else:
+            metrics['drugcand_mean'] = 0.0
+        
+        return metrics
+    except Exception as e:
+        print(f"Warning: Error computing metrics: {e}")
+        return {
+            'valid': 0.0, 'unique': 0.0, 'novel': 0.0,
+            'qed_mean': 0.0, 'sa_mean': 0.0, 'np_mean': 0.0,
+            'logp_solute_mean': 0.0, 'diversity_mean': 0.0, 'drugcand_mean': 0.0
+        }
 
 
 def save_molecules_as_images(mols, img_dir, logp_values):
@@ -411,10 +513,10 @@ def main():
     print(f'Output dir:      {dirs["run_dir"]}')
     print('=' * 70)
     
-    # Load dataset (for encoders/decoders)
+    # Load dataset (for encoders/decoders and novelty checking)
     print(f'\nLoading dataset from {args.mol_data_dir}...')
     data = SparseMolecularDataset()
-    data.load(args.mol_data_dir, conditional=False)  # Don't need filtering for inference
+    data.load(args.mol_data_dir, conditional=True)  # Need conditional=True to get smiles_set for novelty
     
     # Load generator
     G, model_epoch = load_generator(args, data)
@@ -423,11 +525,16 @@ def main():
     
     print(f'\nGenerating {args.num_samples} {class_desc} molecules...')
     
-    # Generate molecules
-    mols = generate_molecules(G, data, target_class, args.num_samples, args, device)
+    # Generate molecules (in batches with stochastic sampling)
+    mols = generate_molecules(G, data, target_class, args.num_samples, args, device, batch_size=args.batch_size)
     
     # Compute statistics
     stats = compute_logp_stats(mols, target_class)
+    
+    # Compute all molecular metrics
+    print('\nComputing molecular metrics (validity, uniqueness, novelty, QED, SA, NP, diversity, drug candidate)...')
+    metrics = compute_all_metrics(mols, data)
+    stats.update(metrics)  # Merge metrics into stats
     
     # Print results
     print('\n' + '=' * 70)
@@ -436,6 +543,18 @@ def main():
     print(f'Total generated:   {stats["total"]}')
     print(f'Valid molecules:   {stats["valid"]} ({stats["validity_rate"]:.1f}%)')
     print(f'Class accuracy:    {stats["class_accuracy"]:.1f}% ({stats["correct_class"]}/{stats["valid"]})')
+    print(f'')
+    print(f'Molecular Quality Metrics:')
+    print(f'  Validity:    {stats.get("valid", 0.0):.1f}%')
+    print(f'  Uniqueness:  {stats.get("unique", 0.0):.1f}%')
+    print(f'  Novelty:     {stats.get("novel", 0.0):.1f}%')
+    print(f'')
+    print(f'Drug-likeness Scores:')
+    print(f'  QED:         {stats.get("qed_mean", 0.0):.3f}')
+    print(f'  SA Score:    {stats.get("sa_mean", 0.0):.3f}')
+    print(f'  NP Score:    {stats.get("np_mean", 0.0):.3f}')
+    print(f'  Diversity:   {stats.get("diversity_mean", 0.0):.3f}')
+    print(f'  Drug Cand:   {stats.get("drugcand_mean", 0.0):.3f}')
     print(f'')
     print(f'LogP Statistics (RAW values):')
     print(f'  Mean:  {stats["logp_mean"]:.3f}')
@@ -477,6 +596,8 @@ def main():
         f.write(f'# {class_desc} molecules\n')
         f.write(f'# Generated: {dirs["timestamp"]}\n')
         f.write(f'# Valid: {stats["valid"]}/{stats["total"]}, Class Accuracy: {stats["class_accuracy"]:.1f}%\n')
+        f.write(f'# Validity: {stats.get("valid", 0.0):.1f}%, Uniqueness: {stats.get("unique", 0.0):.1f}%, Novelty: {stats.get("novel", 0.0):.1f}%\n')
+        f.write(f'# QED: {stats.get("qed_mean", 0.0):.3f}, SA: {stats.get("sa_mean", 0.0):.3f}, NP: {stats.get("np_mean", 0.0):.3f}\n')
         f.write(f'# LogP: mean={stats["logp_mean"]:.2f}, std={stats["logp_std"]:.2f}\n')
         f.write(f'# Format: SMILES<tab>LogP\n\n')
         valid_count = 0
@@ -490,10 +611,10 @@ def main():
                     pass
     print(f'      Saved {valid_count} SMILES')
     
-    # 5. Save generation config
+    # 5. Save generation config (with all metrics)
     print(f'\n[5/5] Saving generation config to {dirs["run_dir"]}/')
     config_path = save_generation_config(dirs, args, class_name, class_desc, model_epoch, stats)
-    print(f'      Saved: config.json')
+    print(f'      Saved: config.json (includes all metrics)')
     
     # Final summary
     print('\n' + '=' * 70)

@@ -19,7 +19,7 @@ class SparseMolecularDataset():
     def load(self, filename, subset=1, conditional=False):
         """
         Load dataset from file.
-        
+
         Args:
             filename: Path to the .sparsedataset file
             subset: Fraction of data to use (0-1)

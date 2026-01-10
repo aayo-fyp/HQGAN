@@ -12,6 +12,7 @@ from collections import defaultdict
 
 import csv
 import os
+import sys
 import time
 import datetime
 import numpy as np
@@ -630,11 +631,30 @@ class ConditionalSolver(object):
             edges_hard, nodes_hard = torch.max(edges_hard, -1)[1], torch.max(nodes_hard, -1)[1]
             R = [list(a[i].reshape(-1).to('cpu')) for i in range(batch_size)]
             F_dist = [list(edges_hard[i].reshape(-1).to('cpu')) for i in range(batch_size)]
-            fd_bond = frdist(R, F_dist)
+            
+            # Try to compute Fréchet distance, skip if recursion error
+            old_limit = sys.getrecursionlimit()
+            try:
+                sys.setrecursionlimit(10000)  # Increase recursion limit
+                fd_bond = frdist(R, F_dist)
+            except (RecursionError, RuntimeError) as e:
+                print(f"Warning: Fréchet distance (bond) calculation failed: {e}. Using previous value.")
+                fd_bond = losses['FD/bond'][-1] if len(losses['FD/bond']) > 0 else 0.0
+            finally:
+                sys.setrecursionlimit(old_limit)  # Always restore original limit
 
             R = [list(x[i].to('cpu')) + list(a[i].reshape(-1).to('cpu')) for i in range(batch_size)]
             F_dist = [list(nodes_hard[i].to('cpu')) + list(edges_hard[i].reshape(-1).to('cpu')) for i in range(batch_size)]
-            fd_bond_atom = frdist(R, F_dist)
+            
+            old_limit = sys.getrecursionlimit()
+            try:
+                sys.setrecursionlimit(10000)  # Increase recursion limit
+                fd_bond_atom = frdist(R, F_dist)
+            except (RecursionError, RuntimeError) as e:
+                print(f"Warning: Fréchet distance (bond_atom) calculation failed: {e}. Using previous value.")
+                fd_bond_atom = losses['FD/bond_atom'][-1] if len(losses['FD/bond_atom']) > 0 else 0.0
+            finally:
+                sys.setrecursionlimit(old_limit)  # Always restore original limit
 
             loss_tb['FD/bond'] = fd_bond
             loss_tb['FD/bond_atom'] = fd_bond_atom
